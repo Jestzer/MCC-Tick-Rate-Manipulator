@@ -1,7 +1,7 @@
 using Avalonia.Controls;
 using Avalonia.Interactivity;
-using Avalonia.Media;
 using Avalonia.Threading;
+using Avalonia.Media;
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -31,6 +31,7 @@ public partial class MainWindow : Window
     private IntPtr _tickRateAddress = IntPtr.Zero;
     private long? _patternAddress;
     private bool _suppressTickrateChange;
+    private bool _operationInProgress;
 
     [DllImport("libc", SetLastError = true)]
     private static extern int ptrace(int request, int pid, IntPtr addr, IntPtr data);
@@ -46,7 +47,7 @@ public partial class MainWindow : Window
 
     private async void TickrateCheckBox_OnChanged(object? sender, RoutedEventArgs e)
     {
-        if (_suppressTickrateChange)
+        if (_suppressTickrateChange || _operationInProgress)
         {
             return;
         }
@@ -63,7 +64,7 @@ public partial class MainWindow : Window
 
     private async void Pal25CheckBox_OnChanged(object? sender, RoutedEventArgs e)
     {
-        if (_suppressTickrateChange)
+        if (_suppressTickrateChange || _operationInProgress)
         {
             return;
         }
@@ -80,6 +81,7 @@ public partial class MainWindow : Window
 
     private async void RescanButton_OnClick(object? sender, RoutedEventArgs e)
     {
+        if (_operationInProgress) return;
         _tickRateAddress = IntPtr.Zero;
         _patternAddress = null;
         await ProbeTickrateAsync();
@@ -87,140 +89,142 @@ public partial class MainWindow : Window
 
     private async void AttachButton_OnClick(object? sender, RoutedEventArgs e)
     {
+        if (_operationInProgress) return;
         await ProbeTickrateAsync();
     }
 
     private async void VerifyButton_OnClick(object? sender, RoutedEventArgs e)
     {
+        if (_operationInProgress) return;
         await ProbeTickrateAsync();
     }
 
     private async void ReadBytesButton_OnClick(object? sender, RoutedEventArgs e)
     {
-        SetAttachEnabled(false);
+        if (_operationInProgress) return;
+        _operationInProgress = true;
+        SetAllControlsEnabled(false);
         UpdateAttachStatus(false, "Reading tickrate bytes...");
         var result = await Task.Run(ReadCurrentBytes);
         ApplyReadBytesResult(result);
-        SetAttachEnabled(true);
+        _operationInProgress = false;
     }
 
     private async void ApplyBytesButton_OnClick(object? sender, RoutedEventArgs e)
     {
+        if (_operationInProgress) return;
         string? input = TestBytesTextBox.Text;
-        SetAttachEnabled(false);
+        _operationInProgress = true;
+        SetAllControlsEnabled(false);
         UpdateAttachStatus(false, "Applying test bytes...");
         var result = await Task.Run(() => ApplyTestBytes(input));
         ApplyTestBytesResult(result);
-        SetAttachEnabled(true);
+        _operationInProgress = false;
     }
 
     private async Task ProbeTickrateAsync()
     {
-        SetAttachEnabled(false);
+        _operationInProgress = true;
+        SetAllControlsEnabled(false);
         UpdateAttachStatus(false, "Scanning for tickrate... THE GAME WILL FREEZE!");
         var result = await Task.Run(ProbeTickrate);
         ApplyResultToUi(result, isWrite: false);
-        SetAttachEnabled(true);
+        _operationInProgress = false;
     }
 
     private async Task ApplyTickrateAsync(int desired)
     {
-        SetAttachEnabled(false);
+        _operationInProgress = true;
+        SetAllControlsEnabled(false);
         UpdateAttachStatus(false, $"Setting tickrate to {desired} Hz...");
         var result = await Task.Run(() => ApplyTickrate(desired));
         ApplyResultToUi(result, isWrite: true);
-        SetAttachEnabled(true);
+        _operationInProgress = false;
     }
 
     private void ApplyResultToUi(OperationResult result, bool isWrite)
     {
-        Dispatcher.UIThread.Post(() =>
+        if (!result.Success)
         {
-            if (!result.Success)
-            {
-                UpdateAttachStatus(false, result.Message);
-                UpdateTickrateStatus("Tickrate: unknown.");
-                UpdateAddressStatus(result.PatternAddress, result.TickAddress);
-                SetTickrateControlsEnabled(false);
-                if (!string.IsNullOrWhiteSpace(result.ErrorPopup))
-                {
-                    ShowErrorWindow(result.ErrorPopup);
-                }
-                return;
-            }
-
-            UpdateAttachStatus(true, result.Message);
+            UpdateAttachStatus(false, result.Message);
+            UpdateTickrateStatus("Tickrate: unknown.");
             UpdateAddressStatus(result.PatternAddress, result.TickAddress);
-            SetTickrateControlsEnabled(true);
+            SetTickrateControlsEnabled(false);
+            AttachButton.IsEnabled = true;
+            if (!string.IsNullOrWhiteSpace(result.ErrorPopup))
+            {
+                ShowErrorWindow(result.ErrorPopup);
+            }
+            return;
+        }
 
-            if (result.CurrentTickrate is 30 or 60)
-            {
-                UpdateTickrateStatus($"Tickrate: {result.CurrentTickrate} Hz.");
-                SetTickrateSelection(result.CurrentTickrate.Value);
-            }
-            else if (result.CurrentTickrate == 25)
-            {
-                UpdateTickrateStatus("Tickrate: 25 Hz.");
-                SetTickrateSelection(25);
-            }
-            else
-            {
-                UpdateTickrateStatus("Tickrate: unknown.");
-            }
+        UpdateAttachStatus(true, result.Message);
+        UpdateAddressStatus(result.PatternAddress, result.TickAddress);
+        SetAllControlsEnabled(true);
 
-            if (isWrite && result.CurrentTickrate is null)
-            {
-                UpdateTickrateStatus("Tickrate: write complete (verification failed)." );
-            }
-        });
+        if (result.CurrentTickrate is 30 or 60)
+        {
+            UpdateTickrateStatus($"Tickrate: {result.CurrentTickrate} Hz.");
+            SetTickrateSelection(result.CurrentTickrate.Value);
+        }
+        else if (result.CurrentTickrate == 25)
+        {
+            UpdateTickrateStatus("Tickrate: 25 Hz.");
+            SetTickrateSelection(25);
+        }
+        else
+        {
+            UpdateTickrateStatus("Tickrate: unknown.");
+        }
+
+        if (isWrite && result.CurrentTickrate is null)
+        {
+            UpdateTickrateStatus("Tickrate: write complete (verification failed)." );
+        }
     }
 
     private void ApplyReadBytesResult(OperationResult result)
     {
-        Dispatcher.UIThread.Post(() =>
+        if (!result.Success)
         {
-            if (!result.Success)
+            UpdateAttachStatus(false, result.Message);
+            SetAllControlsEnabled(true);
+            if (!string.IsNullOrWhiteSpace(result.ErrorPopup))
             {
-                UpdateAttachStatus(false, result.Message);
-                if (!string.IsNullOrWhiteSpace(result.ErrorPopup))
-                {
-                    ShowErrorWindow(result.ErrorPopup);
-                }
-                return;
+                ShowErrorWindow(result.ErrorPopup);
             }
+            return;
+        }
 
-            UpdateAttachStatus(true, result.Message);
-            UpdateAddressStatus(result.PatternAddress, result.TickAddress);
-            SetTickrateControlsEnabled(true);
+        UpdateAttachStatus(true, result.Message);
+        UpdateAddressStatus(result.PatternAddress, result.TickAddress);
+        SetAllControlsEnabled(true);
 
-            if (result.CurrentBytes is { Length: 6 })
-            {
-                TestBytesTextBox.Text = BytesToHex(result.CurrentBytes);
-                UpdateTestBytesStatus("Test bytes: read current value.");
-            }
-        });
+        if (result.CurrentBytes is { Length: 6 })
+        {
+            TestBytesTextBox.Text = BytesToHex(result.CurrentBytes);
+            UpdateTestBytesStatus("Test bytes: read current value.");
+        }
     }
 
     private void ApplyTestBytesResult(OperationResult result)
     {
-        Dispatcher.UIThread.Post(() =>
+        if (!result.Success)
         {
-            if (!result.Success)
+            UpdateAttachStatus(false, result.Message);
+            UpdateTestBytesStatus("Test bytes: apply failed.");
+            SetAllControlsEnabled(true);
+            if (!string.IsNullOrWhiteSpace(result.ErrorPopup))
             {
-                UpdateAttachStatus(false, result.Message);
-                UpdateTestBytesStatus("Test bytes: apply failed.");
-                if (!string.IsNullOrWhiteSpace(result.ErrorPopup))
-                {
-                    ShowErrorWindow(result.ErrorPopup);
-                }
-                return;
+                ShowErrorWindow(result.ErrorPopup);
             }
+            return;
+        }
 
-            UpdateAttachStatus(true, result.Message);
-            UpdateAddressStatus(result.PatternAddress, result.TickAddress);
-            SetTickrateControlsEnabled(true);
-            UpdateTestBytesStatus("Test bytes: applied.");
-        });
+        UpdateAttachStatus(true, result.Message);
+        UpdateAddressStatus(result.PatternAddress, result.TickAddress);
+        SetAllControlsEnabled(true);
+        UpdateTestBytesStatus("Test bytes: applied.");
     }
 
     private void ShowErrorWindow(string errorMessage)
@@ -275,6 +279,11 @@ public partial class MainWindow : Window
             int? current = ReadTickrate(mem, tickAddress.Value);
             return OperationResult.Ok("Tickrate located.", current)
                 .WithAddresses(_patternAddress, tickAddress);
+        }
+        catch (Exception ex)
+        {
+            return OperationResult.Fail("Tickrate probe failed.", ex.Message)
+                .WithAddresses(_patternAddress, _tickRateAddress == IntPtr.Zero ? null : _tickRateAddress.ToInt64());
         }
         finally
         {
@@ -372,6 +381,11 @@ public partial class MainWindow : Window
             return OperationResult.Ok("Tickrate bytes read.", current)
                 .WithAddresses(_patternAddress, tickAddress)
                 .WithCurrentBytes(bytes);
+        }
+        catch (Exception ex)
+        {
+            return OperationResult.Fail("Read bytes failed.", ex.Message)
+                .WithAddresses(_patternAddress, _tickRateAddress == IntPtr.Zero ? null : _tickRateAddress.ToInt64());
         }
         finally
         {
@@ -911,9 +925,16 @@ public partial class MainWindow : Window
         TestBytesTextBox.IsEnabled = enabled;
     }
 
-    private void SetAttachEnabled(bool enabled)
+    private void SetAllControlsEnabled(bool enabled)
     {
         AttachButton.IsEnabled = enabled;
+        TickrateCheckBox.IsEnabled = enabled;
+        Pal25CheckBox.IsEnabled = enabled;
+        VerifyButton.IsEnabled = enabled;
+        RescanButton.IsEnabled = enabled;
+        ReadBytesButton.IsEnabled = enabled;
+        ApplyBytesButton.IsEnabled = enabled;
+        TestBytesTextBox.IsEnabled = enabled;
     }
 
     private readonly record struct MemRegion(long Start, long End, string Perms);
